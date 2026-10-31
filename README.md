@@ -53,4 +53,3 @@ The build produces `d2rl-quest-reward-reset.dll`. Installer assets are embedded 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-

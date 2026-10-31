@@ -1,0 +1,47 @@
+#include <windows.h>
+#include <D2RLPlugin/resource.h>
+#include <D2RLPlugin/version.h>
+#include "install_resource_ids.h"
+
+D2RL_PLUGIN_MANIFEST_RESOURCE_ID RCDATA { D2RL_PLUGIN_RESOURCE_DWORD(D2RL_PLUGIN_ABI_VERSION) }
+IDR_RESET_TOKEN_MISC_ROWS RCDATA "assets/install/misc_reset_token_rows.txt"
+IDR_RESET_TOKEN_ITEM_NAMES RCDATA "assets/install/item-names_reset_token_strings.json"
+IDR_RESET_AKARA_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_akara.sprite"
+IDR_RESET_AKARA_LOWEND_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_akara.lowend.sprite"
+IDR_RESET_CHARSI_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_charsi.sprite"
+IDR_RESET_CHARSI_LOWEND_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_charsi.lowend.sprite"
+IDR_RESET_LARZUK_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_larzuk.sprite"
+IDR_RESET_LARZUK_LOWEND_SPRITE RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_larzuk.lowend.sprite"
+IDR_RESET_AKARA_PNG RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_akara.png"
+IDR_RESET_CHARSI_PNG RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_charsi.png"
+IDR_RESET_LARZUK_PNG RCDATA "assets/install/data/hd/global/ui/items/misc/quest/reset_larzuk.png"
+IDR_RESET_TOKEN_ITEM_MAPPINGS RCDATA "assets/install/item-reset-token-mappings.json"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,22,0
+ PRODUCTVERSION 1,0,22,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0
+ FILEOS 0x40004L
+ FILETYPE 0x2L
+ FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "MadMike\0"
+            VALUE "FileDescription", "Quest Reward Reset Tokens for D2RLoader\0"
+            VALUE "FileVersion", "1.0.22.0\0"
+            VALUE "InternalName", "d2rl-quest-reward-reset\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 MadMike\0"
+            VALUE "OriginalFilename", "d2rl-quest-reward-reset.dll\0"
+            VALUE "ProductName", "Quest Reward Reset Tokens\0"
+            VALUE "ProductVersion", "1.0.22.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
