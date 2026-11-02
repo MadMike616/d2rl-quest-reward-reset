@@ -35,6 +35,8 @@ When the marker is absent, the plugin creates a timestamped backup under `d2rloa
 - Installs each token's PNG, 98×98 sprite, and 49×49 low-end sprite under `data/hd/global/ui/items/misc/quest/`.
 - Creates the TOML marker after all required changes succeed.
 
+The embedded token data includes its source `misc.txt` header. During installation, the plugin maps token values to the active `misc.txt` columns by exact name, so reordering columns does not shift values. Columns present only in the active file are left empty. Source columns absent from the active file are skipped; the installer requires a `code` column but does not validate missing nonempty fields against the combined weapons, armor, and misc schema. A mod that moves a populated token field to another table could therefore leave the token rows incomplete. Empty or duplicate column names are rejected.
+
 Tooltips are supplied by the plugin at runtime through the SDK item-tooltip event. The installer does not add custom strings to `item-modifiers.json`.
 
 To run first-time installation again, remove `quest-reward-reset.toml` from the mod's `d2rloader/config/` folder before launching D2RLoader. The installer makes a fresh backup and reapplies the embedded defaults, including the original token artwork.
