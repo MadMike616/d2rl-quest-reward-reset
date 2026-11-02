@@ -209,7 +209,7 @@ constexpr D2RL::PluginInfo Info {
 	.abiVersion = D2RL_PLUGIN_ABI_VERSION,
 	.id = "madmike-quest-reward-reset",
 	.name = "Quest Reward Reset Tokens",
-	.version = "1.0.22",
+	.version = "1.0.23",
 	.author = "MadMike",
 	.description = "Resets Akara, Charsi, and Larzuk quest rewards using guarded server quest state.",
 	.flags = D2RL::PluginFlags::Client | D2RL::PluginFlags::ModScopedOnly,
@@ -1320,7 +1320,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 	PluginActive.store(true, std::memory_order_release);
 	TryInstallGameMessageHook();
-	context->LogInfo("Quest Reward Reset Tokens 1.0.22 loaded; successful current-difficulty reward resets play item-success feedback after consuming one token.");
+	context->LogInfo("Quest Reward Reset Tokens 1.0.23 loaded; successful current-difficulty reward resets play item-success feedback after consuming one token.");
 	return true;
 }
 
