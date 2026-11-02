@@ -18,8 +18,8 @@ IDR_RESET_LARZUK_PNG RCDATA "assets/install/data/hd/global/ui/items/misc/quest/r
 IDR_RESET_TOKEN_ITEM_MAPPINGS RCDATA "assets/install/item-reset-token-mappings.json"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,22,0
- PRODUCTVERSION 1,0,22,0
+ FILEVERSION 1,0,23,0
+ PRODUCTVERSION 1,0,23,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS 0x40004L
@@ -32,12 +32,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "MadMike\0"
             VALUE "FileDescription", "Quest Reward Reset Tokens for D2RLoader\0"
-            VALUE "FileVersion", "1.0.22.0\0"
+            VALUE "FileVersion", "1.0.23.0\0"
             VALUE "InternalName", "d2rl-quest-reward-reset\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 MadMike\0"
             VALUE "OriginalFilename", "d2rl-quest-reward-reset.dll\0"
             VALUE "ProductName", "Quest Reward Reset Tokens\0"
-            VALUE "ProductVersion", "1.0.22.0\0"
+            VALUE "ProductVersion", "1.0.23.0\0"
         END
     END
     BLOCK "VarFileInfo"
