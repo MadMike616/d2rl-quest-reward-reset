@@ -126,13 +126,70 @@ auto SplitTsv(std::string_view line) -> std::vector<std::string_view> {
 	return fields;
 }
 
+auto NormalizeTsvFields(std::string_view line, std::size_t expectedCount) -> std::vector<std::string> {
+	const auto splitFields = SplitTsv(line);
+	std::vector<std::string> fields;
+	fields.reserve(std::max(splitFields.size(), expectedCount));
+	for (const auto field : splitFields) {
+		fields.emplace_back(field);
+	}
+	while (fields.size() > expectedCount && fields.back().empty()) {
+		fields.pop_back();
+	}
+	if (fields.size() > expectedCount) {
+		throw std::runtime_error("misc.txt row has non-empty columns beyond the active table schema");
+	}
+	fields.resize(expectedCount);
+	return fields;
+}
+
+auto JoinTsv(const std::vector<std::string>& fields) -> std::string {
+	std::string line;
+	for (std::size_t i = 0; i < fields.size(); ++i) {
+		if (i != 0) {
+			line.push_back('\t');
+		}
+		line += fields[i];
+	}
+	return line;
+}
+
 auto MergeMiscRows(std::string_view existing, std::string_view supplied) -> std::string {
 	const auto existingLines = SplitLines(existing);
 	const auto suppliedLines = SplitLines(supplied);
-	if (existingLines.empty() || suppliedLines.size() != 3) {
+	if (existingLines.empty() || suppliedLines.size() != 4) {
 		throw std::runtime_error("misc.txt or embedded token rows have an unexpected layout");
 	}
-	const auto header = SplitTsv(existingLines.front());
+	auto header = SplitTsv(existingLines.front());
+	while (!header.empty() && header.back().empty()) {
+		header.pop_back();
+	}
+	auto sourceHeader = SplitTsv(suppliedLines.front());
+	while (!sourceHeader.empty() && sourceHeader.back().empty()) {
+		sourceHeader.pop_back();
+	}
+	if (header.empty() || sourceHeader.empty()) {
+		throw std::runtime_error("misc.txt is missing its column header");
+	}
+	std::map<std::string, std::size_t> targetColumns;
+	for (std::size_t i = 0; i < header.size(); ++i) {
+		if (header[i].empty() || !targetColumns.emplace(std::string(header[i]), i).second) {
+			throw std::runtime_error("misc.txt has an empty or duplicate column name");
+		}
+	}
+	std::set<std::string> sourceColumnNames;
+	std::size_t sourceCodeColumn = sourceHeader.size();
+	for (std::size_t i = 0; i < sourceHeader.size(); ++i) {
+		if (sourceHeader[i].empty() || !sourceColumnNames.insert(std::string(sourceHeader[i])).second) {
+			throw std::runtime_error("embedded misc.txt header has an empty or duplicate column name");
+		}
+		if (sourceHeader[i] == "code") {
+			sourceCodeColumn = i;
+		}
+	}
+	if (sourceCodeColumn == sourceHeader.size()) {
+		throw std::runtime_error("embedded misc.txt header is missing the code column");
+	}
 	std::size_t codeColumn = header.size();
 	std::size_t spellDescColumn = header.size();
 	std::size_t spellDescStrColumn = header.size();
@@ -148,29 +205,37 @@ auto MergeMiscRows(std::string_view existing, std::string_view supplied) -> std:
 			spellDescStr2Column = i;
 		}
 	}
-	if (codeColumn == header.size() || spellDescColumn == header.size()
-		|| spellDescStrColumn == header.size() || spellDescStr2Column == header.size()) {
-		throw std::runtime_error("misc.txt is missing a code or item-description column");
+	if (codeColumn == header.size()) {
+		throw std::runtime_error("misc.txt is missing a code column");
 	}
 
 	std::set<std::string> expectedCodes;
-	for (const auto& line : suppliedLines) {
-		const auto fields = SplitTsv(line);
-		if (fields.size() != header.size() || codeColumn >= fields.size()
-			|| (fields[codeColumn] != "rt1" && fields[codeColumn] != "rt2" && fields[codeColumn] != "rt3")
-			|| !expectedCodes.insert(std::string(fields[codeColumn])).second) {
-			throw std::runtime_error("embedded misc.txt token rows do not match the active table schema");
+	std::map<std::string, std::string> rowsByCode;
+	for (std::size_t lineIndex = 1; lineIndex < suppliedLines.size(); ++lineIndex) {
+		const auto sourceFields = NormalizeTsvFields(suppliedLines[lineIndex], sourceHeader.size());
+		const auto& code = sourceFields[sourceCodeColumn];
+		if (code != "rt1" && code != "rt2" && code != "rt3") {
+			throw std::runtime_error("embedded misc.txt token row has an unexpected item code");
 		}
+		if (!expectedCodes.insert(code).second) {
+			throw std::runtime_error("embedded misc.txt token rows repeat an item code");
+		}
+		std::vector<std::string> fields(header.size());
+		for (std::size_t sourceColumn = 0; sourceColumn < sourceHeader.size(); ++sourceColumn) {
+			const auto targetColumn = targetColumns.find(std::string(sourceHeader[sourceColumn]));
+			if (targetColumn != targetColumns.end()) {
+				fields[targetColumn->second] = sourceFields[sourceColumn];
+			}
+		}
+		if (codeColumn >= fields.size() || fields[codeColumn] != code) {
+			throw std::runtime_error("embedded misc.txt token row could not be mapped to the active table schema");
+		}
+		rowsByCode.emplace(code, JoinTsv(fields));
 	}
 	if (expectedCodes.size() != 3) {
 		throw std::runtime_error("embedded misc.txt rows do not contain all three reset tokens");
 	}
 
-	std::map<std::string, std::string> rowsByCode;
-	for (const auto& line : suppliedLines) {
-		const auto fields = SplitTsv(line);
-		rowsByCode.emplace(std::string(fields[codeColumn]), line);
-	}
 	std::set<std::string> foundCodes;
 	std::vector<std::pair<std::string, std::string>> replacements;
 	for (std::size_t i = 1; i < existingLines.size(); ++i) {
@@ -186,11 +251,12 @@ auto MergeMiscRows(std::string_view existing, std::string_view supplied) -> std:
 		if (existingLines[i] == expectedLine) {
 			continue;
 		}
+		const auto normalizedFields = NormalizeTsvFields(existingLines[i], header.size());
 		const auto expectedFields = SplitTsv(expectedLine);
-		bool matchesExceptTooltip = fields.size() == expectedFields.size();
-		for (std::size_t field = 0; matchesExceptTooltip && field < fields.size(); ++field) {
+		bool matchesExceptTooltip = normalizedFields.size() == expectedFields.size();
+		for (std::size_t field = 0; matchesExceptTooltip && field < normalizedFields.size(); ++field) {
 			if (field != spellDescColumn && field != spellDescStrColumn && field != spellDescStr2Column
-				&& fields[field] != expectedFields[field]) {
+				&& normalizedFields[field] != expectedFields[field]) {
 				matchesExceptTooltip = false;
 			}
 		}
@@ -708,7 +774,7 @@ void Install(const D2RL::PluginContext* context) {
 	const std::string marker =
 		"[installation]\n"
 		"complete = true\n"
-		"plugin_version = \"1.0.22\"\n";
+		"plugin_version = \"1.0.23\"\n";
 	WriteAtomic(configPath, StringToBytes(marker));
 	char message[192] {};
 	_snprintf_s(message, sizeof(message), _TRUNCATE,
