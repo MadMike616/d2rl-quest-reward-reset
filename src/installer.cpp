@@ -31,6 +31,39 @@ namespace {
 namespace fs = std::filesystem;
 using Bytes = std::vector<std::uint8_t>;
 
+class FirstRunInstallLock {
+public:
+	FirstRunInstallLock() {
+		handle_ = CreateMutexW(nullptr, FALSE, L"Local\\D2RLoader.ModFirstRunInstall.v1");
+		if (handle_ == nullptr) {
+			throw std::runtime_error("could not create the shared first-run install lock");
+		}
+		const auto result = WaitForSingleObject(handle_, 60000);
+		if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {
+			CloseHandle(handle_);
+			handle_ = nullptr;
+			throw std::runtime_error("timed out waiting for another plugin's first-run install");
+		}
+		owns_ = true;
+	}
+
+	FirstRunInstallLock(const FirstRunInstallLock&) = delete;
+	auto operator=(const FirstRunInstallLock&) -> FirstRunInstallLock& = delete;
+
+	~FirstRunInstallLock() {
+		if (owns_) {
+			ReleaseMutex(handle_);
+		}
+		if (handle_ != nullptr) {
+			CloseHandle(handle_);
+		}
+	}
+
+private:
+	HANDLE handle_{};
+	bool owns_{};
+};
+
 struct ResourceFile {
 	int resourceId;
 	const wchar_t* relativePath;
@@ -693,6 +726,20 @@ void Install(const D2RL::PluginContext* context) {
 		context->LogError("Quest Reward Reset: could not resolve the active mod data folder; first-run install was skipped.");
 		return;
 	}
+	FirstRunInstallLock installLock;
+	const bool configExistsAfterLock = fs::exists(configPath, error);
+	if (error) {
+		context->LogError("Quest Reward Reset: could not inspect the plugin TOML path after waiting for the install lock; first-run install was skipped.");
+		return;
+	}
+	if (configExistsAfterLock) {
+		if (fs::is_regular_file(configPath, error) && !error) {
+			context->LogInfo("Quest Reward Reset: another plugin instance completed installation; skipping mod-file edits.");
+		} else {
+			context->LogError("Quest Reward Reset: plugin TOML path exists but is not a regular file; first-run install was skipped.");
+		}
+		return;
+	}
 	const auto miscRelative = fs::path(L"data/global/excel/misc.txt");
 	const auto stringsRelative = fs::path(L"data/local/lng/strings/item-names.json");
 	std::map<fs::path, Bytes> desired;
@@ -774,7 +821,7 @@ void Install(const D2RL::PluginContext* context) {
 	const std::string marker =
 		"[installation]\n"
 		"complete = true\n"
-		"plugin_version = \"1.0.23\"\n";
+		"plugin_version = \"1.0.24\"\n";
 	WriteAtomic(configPath, StringToBytes(marker));
 	char message[192] {};
 	_snprintf_s(message, sizeof(message), _TRUNCATE,

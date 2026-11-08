@@ -25,6 +25,8 @@ Use a token from your inventory or Horadric Cube. It resets the reward for the c
 
 The installer uses `d2rloader/config/quest-reward-reset.toml` as its completion marker. If the marker already exists, it skips all mod-file edits and asset copies.
 
+First-run data edits are serialized with other D2RLoader plugin installers that use the shared mod-install lock, preventing simultaneous backup and file-write operations.
+
 ## First-run installation details
 
 When the marker is absent, the plugin creates a timestamped backup under `d2rloader/backups/quest-reward-reset/`, then:
@@ -50,7 +52,7 @@ cmake -S . -B build -A x64 -DD2RPLUGIN_SDK_ROOT="C:/path/to/PluginSDK/SDK-0.4.0"
 cmake --build build --config Release
 ```
 
-The build produces `d2rl-quest-reward-reset.dll`. Installer assets are embedded in the DLL; no extra files are needed beside it.
+The build produces `d2rl-quest-reward-reset.dll`. The DLL attached to GitHub releases is built with CMake's `Release` configuration. Installer assets are embedded in the DLL; no extra files are needed beside it.
 
 ## License
 
