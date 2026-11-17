@@ -7,13 +7,16 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -30,6 +33,12 @@ namespace {
 
 namespace fs = std::filesystem;
 using Bytes = std::vector<std::uint8_t>;
+constexpr auto SharedSetupDirectory = L"plugins/basefiles-and-backups";
+
+auto DisplayPath(fs::path path) -> std::string {
+	const auto text = path.make_preferred().u8string();
+	return std::string(text.begin(), text.end());
+}
 
 class FirstRunInstallLock {
 public:
@@ -102,21 +111,20 @@ auto ResourceBytes(int id) -> Bytes {
 auto ReadFile(const fs::path& path) -> Bytes {
 	std::ifstream stream(path, std::ios::binary);
 	if (!stream) {
-		throw std::runtime_error("could not open an installation target");
+		throw std::runtime_error("could not read " + DisplayPath(path));
 	}
 	return Bytes(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
 }
 
 auto BytesToString(const Bytes& bytes) -> std::string {
+	if (bytes.empty()) {
+		return {};
+	}
 	return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 auto StringToBytes(std::string_view value) -> Bytes {
 	return Bytes(value.begin(), value.end());
-}
-
-auto ReadText(const fs::path& path) -> std::string {
-	return BytesToString(ReadFile(path));
 }
 
 auto IsWhitespace(char value) noexcept -> bool {
@@ -377,7 +385,47 @@ auto JsonStringProperty(const std::string& object, const std::regex& expression)
 	return match[1].str();
 }
 
-auto MergeItemNames(std::string_view existing, std::string_view supplied) -> std::string {
+const std::regex StringIdExpression(R"("id"\s*:\s*(\d+))");
+
+void CollectStringIds(const std::string& text, std::set<std::uint32_t>& usedIds) {
+	for (auto it = std::sregex_iterator(text.begin(), text.end(), StringIdExpression);
+		it != std::sregex_iterator(); ++it) {
+		const auto value = (*it)[1].str();
+		std::uint32_t id {};
+		const auto parsed = std::from_chars(value.data(), value.data() + value.size(), id);
+		if (parsed.ec == std::errc{} && id <= 65535) {
+			usedIds.insert(id);
+		}
+	}
+}
+
+auto AppendJsonEntries(std::string_view existing, std::size_t close,
+	const std::vector<std::string>& additions) -> std::string {
+	if (additions.empty()) {
+		return std::string(existing);
+	}
+	const auto end = existing.find_last_not_of(" \t\r\n", close - 1);
+	if (end == std::string_view::npos
+		|| (existing[end] != '[' && existing[end] != '}' && existing[end] != ',')) {
+		throw std::runtime_error("unsupported JSON array ending");
+	}
+	const auto newline = existing.find("\r\n") == std::string_view::npos ? "\n" : "\r\n";
+	std::string result(existing.substr(0, end + 1));
+	for (const auto& entry : additions) {
+		if (result.back() == '}') {
+			result += ',';
+		}
+		result += newline;
+		result += "  ";
+		result += entry;
+	}
+	result += newline;
+	result.append(existing.substr(close));
+	return result;
+}
+
+auto MergeItemNames(std::string_view existing, std::string_view supplied,
+	std::set<std::uint32_t>& usedIds) -> std::string {
 	const auto first = existing.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
 	const auto close = existing.find_last_not_of(" \t\r\n");
 	if (first == std::string_view::npos || close == std::string_view::npos
@@ -386,25 +434,15 @@ auto MergeItemNames(std::string_view existing, std::string_view supplied) -> std
 	}
 
 	const std::regex keyExpression(R"REGEX("Key"\s*:\s*"([^"]+)")REGEX");
-	const std::regex idExpression(R"("id"\s*:\s*(\d+))");
 	std::set<std::string> existingKeys;
-	std::set<std::uint32_t> usedIds;
 	const std::string existingCopy(existing);
 	for (auto it = std::sregex_iterator(existingCopy.begin(), existingCopy.end(), keyExpression);
 		it != std::sregex_iterator(); ++it) {
 		existingKeys.insert((*it)[1].str());
 	}
-	for (auto it = std::sregex_iterator(existingCopy.begin(), existingCopy.end(), idExpression);
-		it != std::sregex_iterator(); ++it) {
-		const auto parsed = std::stoul((*it)[1].str());
-		if (parsed <= 65535) {
-			usedIds.insert(static_cast<std::uint32_t>(parsed));
-		}
-	}
 
 	auto templates = ExtractJsonObjects(supplied);
 	std::map<std::string, std::string> objectsByKey;
-	std::uint32_t maximumId = usedIds.empty() ? 0 : *usedIds.rbegin();
 	for (auto& object : templates) {
 		const auto key = JsonStringProperty(object, keyExpression);
 		if (key != "rt1" && key != "rt2" && key != "rt3") {
@@ -419,63 +457,28 @@ auto MergeItemNames(std::string_view existing, std::string_view supplied) -> std
 	}
 
 	std::vector<std::string> additions;
-	std::uint32_t nextId = maximumId < 65535 ? maximumId + 1 : 1;
+	std::uint32_t nextId = 63000;
 	for (const auto& key : { "rt1", "rt2", "rt3" }) {
 		if (existingKeys.find(key) != existingKeys.end()) {
 			continue;
 		}
-		std::uint32_t candidate = nextId;
-		bool found = false;
-		for (std::uint32_t attempt = 0; attempt < 65535; ++attempt) {
-			if (candidate == 0 || candidate > 65535) {
-				candidate = 1;
-			}
-			if (usedIds.find(candidate) == usedIds.end()) {
-				found = true;
-				break;
-			}
-			++candidate;
+		while (nextId < 65000 && !usedIds.insert(nextId).second) {
+			++nextId;
 		}
-		if (!found) {
-			throw std::runtime_error("item-names.json has no unused string ID in the supported range");
+		if (nextId == 65000) {
+			throw std::runtime_error("no unused localization ID in the range 63000 to 64999");
 		}
-		usedIds.insert(candidate);
-		nextId = candidate + 1;
 
 		auto object = objectsByKey.at(key);
 		std::smatch idMatch;
-		if (!std::regex_search(object, idMatch, idExpression)) {
+		if (!std::regex_search(object, idMatch, StringIdExpression)) {
 			throw std::runtime_error("embedded item-name JSON object is missing its ID");
 		}
 		object.replace(static_cast<std::size_t>(idMatch.position()), static_cast<std::size_t>(idMatch.length()),
-			"\"id\": " + std::to_string(candidate));
+			"\"id\": " + std::to_string(nextId++));
 		additions.push_back(std::move(object));
 	}
-	if (additions.empty()) {
-		return std::string(existing);
-	}
-
-	const auto arrayOpen = existing.find('[', first);
-	const auto innerStart = arrayOpen + 1;
-	std::size_t innerEnd = close;
-	while (innerEnd > innerStart && IsWhitespace(existing[innerEnd - 1])) {
-		--innerEnd;
-	}
-	const bool hasExistingEntries = existing.find_first_not_of(" \t\r\n", innerStart) < close;
-	std::string result(existing.substr(0, innerEnd));
-	if (hasExistingEntries) {
-		result += ',';
-	}
-	result += "\n  ";
-	for (std::size_t i = 0; i < additions.size(); ++i) {
-		if (i != 0) {
-			result += ",\n  ";
-		}
-		result += additions[i];
-	}
-	result += '\n';
-	result.append(existing.substr(close));
-	return result;
+	return AppendJsonEntries(existing, close, additions);
 }
 
 auto MergeItemAssetMappings(std::string_view existing, std::string_view supplied) -> std::string {
@@ -539,31 +542,7 @@ auto MergeItemAssetMappings(std::string_view existing, std::string_view supplied
 			additions.push_back(mapping.second);
 		}
 	}
-	if (additions.empty()) {
-		return std::string(existing);
-	}
-
-	const auto arrayOpen = existing.find('[', first);
-	const auto innerStart = arrayOpen + 1;
-	std::size_t innerEnd = close;
-	while (innerEnd > innerStart && IsWhitespace(existing[innerEnd - 1])) {
-		--innerEnd;
-	}
-	const bool hasExistingEntries = existing.find_first_not_of(" \t\r\n", innerStart) < close;
-	std::string result(existing.substr(0, innerEnd));
-	if (hasExistingEntries) {
-		result += ',';
-	}
-	result += "\n  ";
-	for (std::size_t i = 0; i < additions.size(); ++i) {
-		if (i != 0) {
-			result += ",\n  ";
-		}
-		result += additions[i];
-	}
-	result += '\n';
-	result.append(existing.substr(close));
-	return result;
+	return AppendJsonEntries(existing, close, additions);
 }
 
 auto ReadLe16(const Bytes& bytes, std::size_t offset) -> std::uint16_t {
@@ -605,19 +584,34 @@ void ValidateAsset(const ResourceFile& asset, const Bytes& data) {
 	}
 }
 
-auto FindActiveModRoot(const D2RL::PluginContext* context) -> fs::path {
-	if (context == nullptr || context->activeMod == nullptr || context->activeMod[0] == '\0') {
+auto IsWithin(const fs::path& root, const fs::path& target) -> bool {
+	const auto relative = target.lexically_relative(root);
+	return !relative.empty() && !relative.has_root_path()
+		&& *relative.begin() != L"." && *relative.begin() != L"..";
+}
+
+auto CheckedPath(const fs::path& root, const fs::path& relative) -> fs::path {
+	const auto target = root / relative;
+	if (!IsWithin(root, fs::weakly_canonical(target))) {
+		throw std::runtime_error("installation path is outside its expected folder: " + DisplayPath(target));
+	}
+	return target;
+}
+
+auto FindActiveModRoot(const D2RL::PluginContext& context) -> fs::path {
+	if (context.activeMod == nullptr || context.activeMod[0] == '\0') {
 		return {};
 	}
-	const fs::path activeMod(context->activeMod);
+	const std::string_view name(context.activeMod);
+	const fs::path activeMod(std::u8string(name.begin(), name.end()));
 	if (activeMod.has_parent_path() || activeMod.has_root_path()
 		|| activeMod == L"." || activeMod == L".." || activeMod.filename() != activeMod) {
 		return {};
 	}
 	std::vector<fs::path> candidates;
-	const fs::path modDirectory = context->modDirectory == nullptr ? fs::path{} : fs::path(context->modDirectory);
-	const fs::path scopeRoot = context->scopeRootDirectory == nullptr ? fs::path{} : fs::path(context->scopeRootDirectory);
-	const auto packageName = activeMod.native() + std::wstring(L".mpq");
+	const fs::path modDirectory = context.modDirectory == nullptr ? fs::path{} : fs::path(context.modDirectory);
+	const fs::path scopeRoot = context.scopeRootDirectory == nullptr ? fs::path{} : fs::path(context.scopeRootDirectory);
+	const fs::path packageName = activeMod.native() + L".mpq";
 	const auto addBase = [&](const fs::path& base) {
 		if (base.empty()) {
 			return;
@@ -635,23 +629,70 @@ auto FindActiveModRoot(const D2RL::PluginContext* context) -> fs::path {
 		candidates.push_back(scopeRoot / L"mods" / activeMod / packageName);
 		addBase(scopeRoot);
 	}
+	fs::path expected;
 	std::set<std::wstring> seen;
 	for (const auto& candidate : candidates) {
 		const auto normalized = candidate.lexically_normal();
 		if (!seen.insert(normalized.native()).second) {
 			continue;
 		}
-		const auto folderName = normalized.filename();
-		if (folderName != activeMod && folderName != fs::path(packageName)) {
-			continue;
-		}
-		std::error_code error;
-		if (fs::is_regular_file(normalized / L"data/global/excel/misc.txt", error) && !error
-			&& fs::is_regular_file(normalized / L"data/local/lng/strings/item-names.json", error) && !error) {
-			return normalized;
+		if (normalized.filename() == packageName) {
+			if (fs::exists(normalized)) {
+				return fs::canonical(normalized);
+			}
+			if (expected.empty() && fs::is_directory(normalized.parent_path())) {
+				expected = normalized;
+			}
+		} else if (normalized.filename() == activeMod && fs::is_directory(normalized / L"data")) {
+			return fs::canonical(normalized);
 		}
 	}
-	return {};
+	return expected.empty() ? fs::path{} : fs::weakly_canonical(fs::absolute(expected));
+}
+
+auto ReadTarget(const fs::path& root, const fs::path& relative) -> std::optional<Bytes> {
+	const auto target = CheckedPath(root, relative);
+	std::error_code error;
+	const auto status = fs::symlink_status(target, error);
+	if (status.type() == fs::file_type::not_found) {
+		return std::nullopt;
+	}
+	if (error || !fs::is_regular_file(status)) {
+		throw std::runtime_error("expected a readable, loose file here: " + DisplayPath(target));
+	}
+	return ReadFile(target);
+}
+
+auto ReadRequiredFile(const fs::path& root, const fs::path& relative) -> Bytes {
+	auto bytes = ReadTarget(root, relative);
+	if (!bytes) {
+		throw std::runtime_error("required loose file disappeared during setup: " + DisplayPath(root / relative));
+	}
+	return std::move(*bytes);
+}
+
+struct InstallInput {
+	std::optional<Bytes> loose;
+	Bytes base;
+
+	auto Source() const -> const Bytes& { return loose ? *loose : base; }
+};
+
+auto ReadInstallInput(const D2RL::PluginContext& context, const fs::path& modRoot,
+	const fs::path& loaderRoot, const fs::path& relative) -> std::optional<InstallInput> {
+	if (auto loose = ReadTarget(modRoot, relative)) {
+		return InstallInput{ std::move(loose), {} };
+	}
+	const auto baseRoot = fs::weakly_canonical(CheckedPath(loaderRoot,
+		fs::path(SharedSetupDirectory) / L"basefiles"));
+	const auto baseRelative = relative.lexically_relative(L"data");
+	if (auto base = ReadTarget(baseRoot, baseRelative)) {
+		return InstallInput{ std::nullopt, std::move(*base) };
+	}
+	const auto message = "Quest Reward Reset: missing required file " + DisplayPath(modRoot / relative)
+		+ ". Put an extracted copy here: " + DisplayPath(baseRoot / baseRelative);
+	context.LogError(message.c_str());
+	return std::nullopt;
 }
 
 auto Timestamp() -> std::wstring {
@@ -660,188 +701,217 @@ auto Timestamp() -> std::wstring {
 	const auto time = std::chrono::system_clock::to_time_t(now);
 	tm localTime {};
 	localtime_s(&localTime, &time);
-	wchar_t buffer[40] {};
-	swprintf_s(buffer, std::size(buffer), L"%04d%02d%02d-%02d%02d%02d-%03lld",
+	wchar_t buffer[48] {};
+	swprintf_s(buffer, std::size(buffer), L"%04d%02d%02d-%02d%02d%02d-%03lld-%lu",
 		localTime.tm_year + 1900, localTime.tm_mon + 1, localTime.tm_mday,
 		localTime.tm_hour, localTime.tm_min, localTime.tm_sec,
-		static_cast<long long>(milliseconds));
+		static_cast<long long>(milliseconds), GetCurrentProcessId());
 	return buffer;
 }
 
-void WriteAtomic(const fs::path& target, const Bytes& data) {
-	std::error_code error;
-	fs::create_directories(target.parent_path(), error);
-	if (error) {
-		throw std::runtime_error("could not create an installation directory");
-	}
-	const auto temporary = target.wstring() + L".qrr-install-" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
-	{
-		std::ofstream stream(fs::path(temporary), std::ios::binary | std::ios::trunc);
-		if (!stream) {
-			throw std::runtime_error("could not create a temporary installation file");
+void WriteAtomic(const fs::path& target, const Bytes& data, bool replace) {
+	fs::create_directories(target.parent_path());
+	auto temporary = target;
+	temporary += L".qrr-install-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+	try {
+		std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+		if (!data.empty()) {
+			stream.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 		}
-		stream.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-		stream.flush();
-		if (!stream) {
-			stream.close();
-			fs::remove(temporary, error);
-			throw std::runtime_error("could not write a temporary installation file");
+		stream.close();
+		const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+		if (!stream || !MoveFileExW(temporary.c_str(), target.c_str(), flags)) {
+			throw std::runtime_error("could not write " + DisplayPath(target));
 		}
-	}
-	if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-		fs::remove(temporary, error);
-		throw std::runtime_error("could not atomically replace an installation file");
+	} catch (...) {
+		std::error_code ignored;
+		fs::remove(temporary, ignored);
+		throw;
 	}
 }
 
-void Install(const D2RL::PluginContext* context) {
-	if (context->pluginConfigPath == nullptr || context->pluginConfigPath[0] == L'\0') {
-		context->LogError("Quest Reward Reset: D2RLoader did not provide the plugin TOML path; first-run install was skipped.");
-		return;
+struct Edit {
+	fs::path relative;
+	std::optional<Bytes> before;
+	Bytes after;
+};
+
+void QueueEdit(std::vector<Edit>& edits, fs::path relative, std::optional<Bytes> before, Bytes after) {
+	if (!before || *before != after) {
+		edits.push_back({ std::move(relative), std::move(before), std::move(after) });
 	}
-	const fs::path loaderConfigPath(context->pluginConfigPath);
-	const fs::path configDirectory = loaderConfigPath.parent_path();
-	if (configDirectory.empty()) {
-		context->LogError("Quest Reward Reset: D2RLoader's plugin config directory could not be resolved; first-run install was skipped.");
-		return;
-	}
-	const fs::path configPath = configDirectory / L"quest-reward-reset.toml";
-	std::error_code error;
-	const bool configExists = fs::exists(configPath, error);
-	if (error) {
-		context->LogError("Quest Reward Reset: could not inspect the plugin TOML path; first-run install was skipped.");
-		return;
-	}
-	if (configExists) {
-		if (fs::is_regular_file(configPath, error) && !error) {
-			context->LogInfo("Quest Reward Reset: plugin TOML already exists; skipping mod-file installation.");
-		} else {
-			context->LogError("Quest Reward Reset: plugin TOML path exists but is not a regular file; first-run install was skipped.");
+}
+
+void ApplyEdits(const fs::path& modRoot, const fs::path& loaderRoot, const fs::path& backupRoot,
+	const std::vector<Edit>& edits, const fs::path& markerRelative, const Bytes& marker) {
+	if (!edits.empty()) {
+		if (!fs::create_directories(backupRoot)) {
+			throw std::runtime_error("install backup directory already exists: " + DisplayPath(backupRoot));
 		}
-		return;
+		std::string created;
+		for (const auto& edit : edits) {
+			if (!edit.before) {
+				created += DisplayPath(edit.relative) + '\n';
+				continue;
+			}
+			const auto backup = CheckedPath(backupRoot, edit.relative);
+			fs::create_directories(backup.parent_path());
+			if (!fs::copy_file(CheckedPath(modRoot, edit.relative), backup) || ReadFile(backup) != *edit.before) {
+				throw std::runtime_error("could not verify backup of " + DisplayPath(modRoot / edit.relative));
+			}
+		}
+		if (!created.empty()) {
+			WriteAtomic(backupRoot / L"created-files.txt", StringToBytes(created), false);
+		}
+	}
+
+	std::vector<const Edit*> written;
+	written.reserve(edits.size());
+	try {
+		for (const auto& edit : edits) {
+			const auto target = CheckedPath(modRoot, edit.relative);
+			if (ReadTarget(modRoot, edit.relative) != edit.before) {
+				throw std::runtime_error("a mod file changed during setup: " + DisplayPath(target));
+			}
+			WriteAtomic(target, edit.after, edit.before.has_value());
+			written.push_back(&edit);
+		}
+		// Commit the marker last so a failed or interrupted install can be retried.
+		WriteAtomic(CheckedPath(loaderRoot, markerRelative), marker, false);
+	} catch (...) {
+		bool restored = true;
+		for (auto i = written.rbegin(); i != written.rend(); ++i) {
+			try {
+				const auto& edit = **i;
+				const auto current = ReadTarget(modRoot, edit.relative);
+				if (!current || *current != edit.after) {
+					restored = false;
+					continue;
+				}
+				const auto target = CheckedPath(modRoot, edit.relative);
+				if (edit.before) {
+					WriteAtomic(target, *edit.before, true);
+				} else if (!fs::remove(target)) {
+					restored = false;
+				}
+			} catch (...) {
+				restored = false;
+			}
+		}
+		if (!restored) {
+			throw std::runtime_error("could not restore every edited file; see the install backup at "
+				+ DisplayPath(backupRoot));
+		}
+		throw;
+	}
+}
+
+auto Install(const D2RL::PluginContext& context, std::string_view pluginVersion) -> InstallResult {
+	if (context.pluginConfigPath == nullptr || context.pluginConfigPath[0] == L'\0') {
+		throw std::runtime_error("D2RLoader did not provide the mod's configuration path");
+	}
+	const auto configDirectory = fs::path(context.pluginConfigPath).parent_path();
+	const auto loader = configDirectory.parent_path();
+	if (!loader.is_absolute() || loader.filename() != L"d2rloader" || configDirectory.filename() != L"config") {
+		throw std::runtime_error("D2RLoader did not provide a mod-scoped configuration path");
 	}
 
 	const auto modRoot = FindActiveModRoot(context);
 	if (modRoot.empty()) {
-		context->LogError("Quest Reward Reset: could not resolve the active mod data folder; first-run install was skipped.");
-		return;
+		throw std::runtime_error("could not resolve the active mod's data directory");
 	}
+	const auto mod = modRoot.extension() == L".mpq" ? modRoot.parent_path() : modRoot;
+	const auto loaderRoot = fs::weakly_canonical(loader);
+	if (!IsWithin(mod, loaderRoot) || loaderRoot.filename() != L"d2rloader") {
+		throw std::runtime_error("D2RLoader's configuration and backup folder is outside the active mod");
+	}
+
 	FirstRunInstallLock installLock;
-	const bool configExistsAfterLock = fs::exists(configPath, error);
-	if (error) {
-		context->LogError("Quest Reward Reset: could not inspect the plugin TOML path after waiting for the install lock; first-run install was skipped.");
-		return;
+	const fs::path markerRelative(L"config/quest-reward-reset.toml");
+	const auto markerPath = CheckedPath(loaderRoot, markerRelative);
+	std::error_code error;
+	const auto markerStatus = fs::symlink_status(markerPath, error);
+	if (fs::is_regular_file(markerStatus)) {
+		return InstallResult::AlreadyInstalled;
 	}
-	if (configExistsAfterLock) {
-		if (fs::is_regular_file(configPath, error) && !error) {
-			context->LogInfo("Quest Reward Reset: another plugin instance completed installation; skipping mod-file edits.");
-		} else {
-			context->LogError("Quest Reward Reset: plugin TOML path exists but is not a regular file; first-run install was skipped.");
+	if (markerStatus.type() != fs::file_type::not_found) {
+		throw std::runtime_error("expected a regular file at " + DisplayPath(markerPath));
+	}
+
+	if (fs::is_regular_file(modRoot)) {
+		throw std::runtime_error("first-run setup requires an unpacked mod directory: " + DisplayPath(modRoot));
+	}
+	const fs::path miscRelative(L"data/global/excel/misc.txt");
+	const fs::path stringsRelative(L"data/local/lng/strings/item-names.json");
+	const fs::path mappingsRelative(L"data/hd/items/items.json");
+	auto misc = ReadInstallInput(context, modRoot, loaderRoot, miscRelative);
+	auto names = ReadInstallInput(context, modRoot, loaderRoot, stringsRelative);
+	auto mappings = ReadInstallInput(context, modRoot, loaderRoot, mappingsRelative);
+	if (!misc || !names || !mappings) {
+		return InstallResult::Failed;
+	}
+
+	std::vector<Edit> edits;
+	edits.reserve(3 + InstalledAssets.size());
+	auto mergedMisc = MergeMiscRows(BytesToString(misc->Source()), BytesToString(ResourceBytes(IDR_RESET_TOKEN_MISC_ROWS)));
+	QueueEdit(edits, miscRelative, std::move(misc->loose), StringToBytes(mergedMisc));
+
+	const auto namesText = BytesToString(names->Source());
+	std::set<std::uint32_t> usedIds;
+	CollectStringIds(namesText, usedIds);
+	const auto stringsDir = CheckedPath(modRoot, stringsRelative.parent_path());
+	const auto stringsStatus = fs::status(stringsDir, error);
+	if (fs::is_directory(stringsStatus)) {
+		for (const auto& file : fs::directory_iterator(stringsDir)) {
+			if (file.path().extension() != L".json" || file.path().filename() == stringsRelative.filename()
+				|| !file.is_regular_file()) {
+				continue;
+			}
+			const auto relative = stringsRelative.parent_path() / file.path().filename();
+			CollectStringIds(BytesToString(ReadRequiredFile(modRoot, relative)), usedIds);
 		}
-		return;
+	} else if (stringsStatus.type() != fs::file_type::not_found) {
+		throw std::runtime_error("expected a readable directory here: " + DisplayPath(stringsDir));
 	}
-	const auto miscRelative = fs::path(L"data/global/excel/misc.txt");
-	const auto stringsRelative = fs::path(L"data/local/lng/strings/item-names.json");
-	std::map<fs::path, Bytes> desired;
-	const auto mergedMisc = MergeMiscRows(
-		ReadText(modRoot / miscRelative), BytesToString(ResourceBytes(IDR_RESET_TOKEN_MISC_ROWS)));
-	const auto mergedNames = MergeItemNames(
-		ReadText(modRoot / stringsRelative), BytesToString(ResourceBytes(IDR_RESET_TOKEN_ITEM_NAMES)));
-	const auto itemMappingsRelative = fs::path(L"data/hd/items/items.json");
-	const auto mergedItemMappings = MergeItemAssetMappings(
-		ReadText(modRoot / itemMappingsRelative), BytesToString(ResourceBytes(IDR_RESET_TOKEN_ITEM_MAPPINGS)));
-	desired.emplace(miscRelative, StringToBytes(mergedMisc));
-	desired.emplace(stringsRelative, StringToBytes(mergedNames));
-	desired.emplace(itemMappingsRelative, StringToBytes(mergedItemMappings));
+	auto mergedNames = MergeItemNames(namesText, BytesToString(ResourceBytes(IDR_RESET_TOKEN_ITEM_NAMES)), usedIds);
+	QueueEdit(edits, stringsRelative, std::move(names->loose), StringToBytes(mergedNames));
+
+	auto mergedMappings = MergeItemAssetMappings(
+		BytesToString(mappings->Source()), BytesToString(ResourceBytes(IDR_RESET_TOKEN_ITEM_MAPPINGS)));
+	QueueEdit(edits, mappingsRelative, std::move(mappings->loose), StringToBytes(mergedMappings));
+
 	for (const auto& asset : InstalledAssets) {
 		auto bytes = ResourceBytes(asset.resourceId);
 		ValidateAsset(asset, bytes);
-		desired.emplace(fs::path(asset.relativePath), std::move(bytes));
+		QueueEdit(edits, asset.relativePath, ReadTarget(modRoot, asset.relativePath), std::move(bytes));
 	}
 
-	if (context->scopeRootDirectory == nullptr || context->scopeRootDirectory[0] == L'\0') {
-		context->LogError("Quest Reward Reset: D2RLoader did not provide the mod scope folder; files were not changed.");
-		return;
+	const auto backupRoot = CheckedPath(loaderRoot,
+		fs::path(SharedSetupDirectory) / L"backups/quest-reward-reset" / Timestamp());
+	const auto marker = std::string("[installation]\ncomplete = true\nplugin_version = \"")
+		+ std::string(pluginVersion) + "\"\n";
+	ApplyEdits(modRoot, loaderRoot, backupRoot, edits, markerRelative, StringToBytes(marker));
+	if (edits.empty()) {
+		context.LogInfo("Quest Reward Reset: token data already present; recorded first-run installation.");
+		return InstallResult::AlreadyInstalled;
 	}
-	const fs::path loaderDirectory = configPath.parent_path().parent_path();
-	if (loaderDirectory.empty()) {
-		context->LogError("Quest Reward Reset: could not resolve the mod's D2RLoader folder; files were not changed.");
-		return;
-	}
-	const fs::path backupRoot = loaderDirectory / L"backups/quest-reward-reset" / Timestamp();
-	fs::create_directories(backupRoot, error);
-	if (error) {
-		context->LogError("Quest Reward Reset: could not create the backup folder; files were not changed.");
-		return;
-	}
-	for (const auto& [relative, bytes] : desired) {
-		(void)bytes;
-		const auto original = modRoot / relative;
-		if (!fs::exists(original, error)) {
-			if (error) {
-				context->LogError("Quest Reward Reset: could not inspect an install target; files were not changed.");
-				return;
-			}
-			continue;
-		}
-		if (!fs::is_regular_file(original, error) || error) {
-			context->LogError("Quest Reward Reset: an install target is not a regular file; files were not changed.");
-			return;
-		}
-		const auto backup = backupRoot / relative;
-		fs::create_directories(backup.parent_path(), error);
-		if (error || !fs::copy_file(original, backup, fs::copy_options::none, error) || error) {
-			context->LogError("Quest Reward Reset: a backup could not be created; files were not changed.");
-			return;
-		}
-	}
-
-	std::size_t changedFiles = 0;
-	for (const auto& [relative, bytes] : desired) {
-		const auto target = modRoot / relative;
-		bool same = false;
-		const bool targetExists = fs::exists(target, error);
-		if (error) {
-			context->LogError("Quest Reward Reset: could not inspect an install target; TOML was not created.");
-			return;
-		}
-		if (targetExists) {
-			if (!fs::is_regular_file(target, error) || error) {
-				context->LogError("Quest Reward Reset: an install target is not a regular file; TOML was not created.");
-				return;
-			}
-			same = ReadFile(target) == bytes;
-		}
-		if (!same) {
-			WriteAtomic(target, bytes);
-			++changedFiles;
-		}
-	}
-
-	const std::string marker =
-		"[installation]\n"
-		"complete = true\n"
-		"plugin_version = \"1.0.24\"\n";
-	WriteAtomic(configPath, StringToBytes(marker));
-	char message[192] {};
-	_snprintf_s(message, sizeof(message), _TRUNCATE,
-		"Quest Reward Reset: first-run install completed; %zu mod files updated and a timestamped backup was created.", changedFiles);
-	context->LogInfo(message);
+	context.LogInfo("Quest Reward Reset: first-run install complete. Exit and restart D2RLoader with the same mod to load the tokens.");
+	return InstallResult::Installed;
 }
 
 } // namespace
 
-void RunFirstRunInstall(const D2RL::PluginContext* context) noexcept {
-	if (context == nullptr) {
-		return;
-	}
+auto RunFirstRunInstall(const D2RL::PluginContext& context, std::string_view pluginVersion) noexcept -> InstallResult {
 	try {
-		Install(context);
-	} catch (const std::exception&) {
-		context->LogError("Quest Reward Reset: first-run installation failed; no TOML marker was created, so it will retry next startup.");
+		return Install(context, pluginVersion);
+	} catch (const std::exception& error) {
+		char message[2048] {};
+		std::snprintf(message, sizeof(message), "Quest Reward Reset: first-run setup failed. %s", error.what());
+		context.LogError(message);
 	} catch (...) {
-		context->LogError("Quest Reward Reset: first-run installation failed unexpectedly; no TOML marker was created, so it will retry next startup.");
+		context.LogError("Quest Reward Reset: first-run setup failed unexpectedly.");
 	}
+	return InstallResult::Failed;
 }
 
 } // namespace QuestRewardReset

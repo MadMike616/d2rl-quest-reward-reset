@@ -6,16 +6,16 @@
 |---|---|
 | Plugin name | Quest Reward Reset |
 | Plugin ID | madmike-quest-reward-reset |
-| Release version | 1.0.24 |
-| Inventory updated | 2026-11-08 |
-| Source revision | v1.0.24 release tag |
+| Release version | 1.1.0 (unreleased) |
+| Inventory updated | 2026-11-17 |
+| Source revision | v1.1.0 source update |
 | D2R build(s) audited | Not validated |
 | D2RLoader SDK / Plugin ABI | PluginSDK 0.4.0 / Plugin ABI 4 |
 | Audit status | Complete |
 
 ## Scope and method
 
-Inspected all files under `src/`, `CMakeLists.txt`, and `README.md` for plugin-owned hooks or patches that intercept or modify native or operating-system targets. The only direct hook site is the thread-scoped Win32 `WH_GETMESSAGE` hook in `src/plugin.cpp`. Quest-state and synchronization RVAs are validated helper calls and are not installed as hook targets. No hook-site changes were made from v1.0.23; this release changes version metadata and the build configuration only.
+Inspected the plugin source under `src/`, `CMakeLists.txt`, and `README.md` for plugin-owned hooks or patches that intercept or modify native or operating-system targets. The only direct hook site is the thread-scoped Win32 `WH_GETMESSAGE` hook in `src/plugin.cpp`. Quest-state and synchronization RVAs are validated helper calls and are not installed as hook targets. There are no hook-site changes from v1.0.24. On a fresh install that writes mod files, hook installation waits until the next launch so the game can load those files first.
 
 Numeric native addresses are reported as RVAs. This Win32 hook has no native address, so its identifier is N/A.
 

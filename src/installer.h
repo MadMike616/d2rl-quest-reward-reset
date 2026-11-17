@@ -1,11 +1,15 @@
 #pragma once
 
+#include <string_view>
+
 namespace D2RL {
 struct PluginContext;
 }
 
 namespace QuestRewardReset {
 
-void RunFirstRunInstall(const D2RL::PluginContext* context) noexcept;
+enum class InstallResult { AlreadyInstalled, Installed, Failed };
+
+auto RunFirstRunInstall(const D2RL::PluginContext& context, std::string_view pluginVersion) noexcept -> InstallResult;
 
 } // namespace QuestRewardReset

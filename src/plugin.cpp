@@ -209,7 +209,7 @@ constexpr D2RL::PluginInfo Info {
 	.abiVersion = D2RL_PLUGIN_ABI_VERSION,
 	.id = "madmike-quest-reward-reset",
 	.name = "Quest Reward Reset Tokens",
-	.version = "1.0.24",
+	.version = "1.1.0",
 	.author = "MadMike",
 	.description = "Resets Akara, Charsi, and Larzuk quest rewards using guarded server quest state.",
 	.flags = D2RL::PluginFlags::Client | D2RL::PluginFlags::ModScopedOnly,
@@ -238,7 +238,6 @@ std::atomic<std::uint32_t> HoveredItemContainer {};
 std::atomic<std::uint64_t> HoveredPlayerHandle {};
 std::atomic<LONG> HoveredCursorX {};
 std::atomic<LONG> HoveredCursorY {};
-std::atomic<std::uint32_t> LastLoggedHoverRuntimeId {};
 std::atomic<std::uint64_t> SuppressRightButtonUpAt {};
 std::atomic<HHOOK> GameMessageHook {};
 std::atomic<std::uint32_t> ActiveHookCallbacks {};
@@ -301,19 +300,8 @@ auto CheckRuntimeQuestContract(const D2RL::PluginContext* context) noexcept -> b
 		&& clearCallerMatches && setCallerMatches;
 	NativeQuestContractMatches.store(matches, std::memory_order_release);
 
-	char message[320] {};
-	std::snprintf(message, sizeof(message),
-		"Quest Reward Reset: runtime quest contract %s (Get=%s Set=%s Clear=%s clear-caller=%s set-caller=%s).",
-		matches ? "matched" : "mismatch; quest functions disabled",
-		getterMatches ? "match" : "mismatch",
-		setterMatches ? "match" : "mismatch",
-		clearerMatches ? "match" : "mismatch",
-		clearCallerMatches ? "match" : "mismatch",
-		setCallerMatches ? "match" : "mismatch");
-	if (matches) {
-		context->LogInfo(message);
-	} else {
-		context->LogWarn(message);
+	if (!matches) {
+		context->LogWarn("Quest Reward Reset: this game build's quest functions could not be verified; quest resets are disabled.");
 	}
 	return matches;
 }
@@ -376,26 +364,8 @@ auto CheckRuntimeResetContract(const D2RL::PluginContext* context) noexcept -> b
 		&& localContextMatches && localPlayerMatches && unitIdMatches && unitTypeMatches && gameFromUnitMatches
 		&& serverUnitMatches && playerDataMatches && gameLayoutMatches;
 	NativeResetContractMatches.store(matches, std::memory_order_release);
-	char message[384] {};
-	std::snprintf(message, sizeof(message),
-		"Quest Reward Reset: authoritative reset contract %s (sync=%s callers=%s/%s/%s local=%s/%s unit-type/id=%s/%s game=%s server=%s player-data=%s layout=%s).",
-		matches ? "matched" : "mismatch; reset functions disabled",
-		entryMatches ? "match" : "mismatch",
-		callerOneMatches ? "match" : "mismatch",
-		callerTwoMatches ? "match" : "mismatch",
-		callerThreeMatches ? "match" : "mismatch",
-		localContextMatches ? "match" : "mismatch",
-		localPlayerMatches ? "match" : "mismatch",
-		unitTypeMatches ? "match" : "mismatch",
-		unitIdMatches ? "match" : "mismatch",
-		gameFromUnitMatches ? "match" : "mismatch",
-		serverUnitMatches ? "match" : "mismatch",
-		playerDataMatches ? "match" : "mismatch",
-		gameLayoutMatches ? "match" : "mismatch");
-	if (matches) {
-		context->LogInfo(message);
-	} else {
-		context->LogWarn(message);
+	if (!matches) {
+		context->LogWarn("Quest Reward Reset: this game build's reward synchronization could not be verified; quest resets are disabled.");
 	}
 	return matches;
 }
@@ -406,12 +376,8 @@ auto CheckRuntimeSoundContract(const D2RL::PluginContext* context) noexcept -> b
 		AttachSoundExpected.data(),
 		static_cast<std::uint32_t>(AttachSoundExpected.size()));
 	NativeSoundContractMatches.store(matches, std::memory_order_release);
-	if (context != nullptr) {
-		if (matches) {
-			context->LogInfo("Quest Reward Reset: native item-success sound contract matched; feedback sound is enabled.");
-		} else {
-			context->LogWarn("Quest Reward Reset: native sound contract mismatch; quest resets remain enabled without sound feedback.");
-		}
+	if (context != nullptr && !matches) {
+		context->LogWarn("Quest Reward Reset: the success sound could not be verified for this game build; quest resets remain enabled without it.");
 	}
 	return matches;
 }
@@ -802,9 +768,6 @@ auto TryInstallGameMessageHook() noexcept -> bool {
 	GameMessageHookModule = module;
 	GameMessageHook.store(hook, std::memory_order_release);
 	HookInstallWarningLogged.store(false, std::memory_order_release);
-	if (PluginContext != nullptr) {
-		PluginContext->LogInfo("Quest Reward Reset: right-click handler installed for the active D2R window.");
-	}
 	return true;
 }
 
@@ -1110,12 +1073,6 @@ LRESULT CALLBACK GameMessageHookCallback(int code, WPARAM removeMode, LPARAM par
 			&& QueueTokenUse(itemCode, runtimeId, player)) {
 			message->message = WM_NULL;
 			SuppressRightButtonUpAt.store(now, std::memory_order_release);
-			const auto* const token = FindToken(itemCode);
-			char log[192] {};
-			std::snprintf(log, sizeof(log), "Quest Reward Reset: right-click on %s queued; native item activation suppressed.", token->name);
-			if (PluginContext != nullptr) {
-				PluginContext->LogInfo(log);
-			}
 		}
 	}
 	return CallNextHookEx(GameMessageHook.load(std::memory_order_acquire), code, removeMode, parameter);
@@ -1144,7 +1101,6 @@ void __cdecl OnItemTooltip(
 		HoveredPlayerHandle.store(0, std::memory_order_release);
 		HoveredCursorX.store(0, std::memory_order_release);
 		HoveredCursorY.store(0, std::memory_order_release);
-		LastLoggedHoverRuntimeId.store(0, std::memory_order_release);
 		return;
 	}
 	if (event->text != nullptr && event->capacity != 0) {
@@ -1164,7 +1120,6 @@ void __cdecl OnItemTooltip(
 		HoveredPlayerHandle.store(0, std::memory_order_release);
 		HoveredCursorX.store(0, std::memory_order_release);
 		HoveredCursorY.store(0, std::memory_order_release);
-		LastLoggedHoverRuntimeId.store(0, std::memory_order_release);
 		return;
 	}
 	TryInstallGameMessageHook();
@@ -1199,12 +1154,6 @@ void __cdecl OnItemTooltip(
 	HoveredCursorX.store(cursorPosition.x, std::memory_order_release);
 	HoveredCursorY.store(cursorPosition.y, std::memory_order_release);
 	HoveredItemAt.store(GetTickCount64(), std::memory_order_release);
-	const auto priorRuntimeId = LastLoggedHoverRuntimeId.exchange(itemInfo.runtimeId, std::memory_order_acq_rel);
-	if (priorRuntimeId != itemInfo.runtimeId) {
-		char message[192] {};
-		std::snprintf(message, sizeof(message), "Quest Reward Reset: ready: %s token runtimeId=%u.", token->name, itemInfo.runtimeId);
-		context->LogInfo(message);
-	}
 }
 
 void UnregisterTooltipListener() noexcept {
@@ -1254,8 +1203,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 		return false;
 	}
 
-	PluginContext = context;
-	RunFirstRunInstall(context);
 	PluginActive.store(false, std::memory_order_release);
 	NativeQuestContractMatches.store(false, std::memory_order_release);
 	NativeResetContractMatches.store(false, std::memory_order_release);
@@ -1272,7 +1219,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 	HoveredPlayerHandle.store(0, std::memory_order_release);
 	HoveredCursorX.store(0, std::memory_order_release);
 	HoveredCursorY.store(0, std::memory_order_release);
-	LastLoggedHoverRuntimeId.store(0, std::memory_order_release);
 	SuppressRightButtonUpAt.store(0, std::memory_order_release);
 	HookInstallWarningLogged.store(false, std::memory_order_release);
 	TooltipListenerHandle = D2RL::SharedEvents::InvalidHandle;
@@ -1295,6 +1241,12 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 		PluginContext = nullptr;
 		return false;
 	}
+
+	const auto install = RunFirstRunInstall(*context, Info.version);
+	if (install != InstallResult::AlreadyInstalled) {
+		return install == InstallResult::Installed;
+	}
+	PluginContext = context;
 
 	CheckRuntimeQuestContract(context);
 	CheckRuntimeResetContract(context);
@@ -1320,7 +1272,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 	PluginActive.store(true, std::memory_order_release);
 	TryInstallGameMessageHook();
-	context->LogInfo("Quest Reward Reset Tokens 1.0.24 loaded; successful current-difficulty reward resets play item-success feedback after consuming one token.");
+	context->LogInfo("Quest Reward Reset Tokens 1.1.0 loaded; successful current-difficulty reward resets play item-success feedback after consuming one token.");
 	return true;
 }
 
