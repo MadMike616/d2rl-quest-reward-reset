@@ -6,9 +6,9 @@
 |---|---|
 | Plugin name | Quest Reward Reset |
 | Plugin ID | madmike-quest-reward-reset |
-| Release version | 1.1.0 (unreleased) |
+| Release version | 1.1.0 |
 | Inventory updated | 2026-11-17 |
-| Source revision | v1.1.0 source update |
+| Source revision | v1.1.0 release tag |
 | D2R build(s) audited | Not validated |
 | D2RLoader SDK / Plugin ABI | PluginSDK 0.4.0 / Plugin ABI 4 |
 | Audit status | Complete |

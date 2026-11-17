@@ -68,7 +68,7 @@ cmake -S . -B ../build/quest-reward-reset -A x64 -DD2RPLUGIN_SDK_ROOT="C:/path/t
 cmake --build ../build/quest-reward-reset --config Release
 ```
 
-The build produces `d2rl-quest-reward-reset.dll`. The DLL attached to GitHub releases is built with CMake's `Release` configuration. Installer assets are embedded in the DLL; no extra files are needed beside it.
+The build produces `d2rl-quest-reward-reset.dll`. GitHub releases ship an optimized Release build. The DLL contains the token data and artwork used by the installer.
 
 ## License
 
