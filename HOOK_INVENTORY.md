@@ -6,9 +6,9 @@
 |---|---|
 | Plugin name | Quest Reward Reset |
 | Plugin ID | madmike-quest-reward-reset |
-| Release version | 1.1.0 |
-| Inventory updated | 2026-11-17 |
-| Source revision | v1.1.0 release tag |
+| Release version | 1.1.1 |
+| Inventory updated | 2026-11-27 |
+| Source revision | v1.1.1 release source |
 | D2R build(s) audited | Not validated |
 | D2RLoader SDK / Plugin ABI | PluginSDK 0.4.0 / Plugin ABI 4 |
 | Audit status | Complete |
@@ -34,3 +34,5 @@ Numeric native addresses are reported as RVAs. This Win32 hook has no native add
 ## Audit notes
 
 This is a source-level hook-site audit. No specific D2R build was audited or runtime-validated for this inventory. Quest helper RVAs and their expected-byte witnesses are build-specific and are guarded in source, but those helper calls are outside the hook-site inventory.
+
+Release 1.1.1 review: no native hook, patch, vtable, or OS input/message hook targets changed. Existing validation limits remain applicable.

@@ -19,3 +19,10 @@ target_compile_options(quest-reward-reset PRIVATE
 target_link_options(quest-reward-reset PRIVATE /INCREMENTAL:NO /Brepro /MACHINE:X64)
 target_link_libraries(quest-reward-reset PRIVATE user32)
 set_target_properties(quest-reward-reset PROPERTIES PREFIX "" OUTPUT_NAME "d2rl-quest-reward-reset")
+
+option(QUEST_REWARD_RESET_TESTS "Build installation state regression tests" OFF)
+if(QUEST_REWARD_RESET_TESTS)
+    enable_testing()
+    add_executable(installation_state_tests tests/installation_state_tests.cpp)
+    add_test(NAME installation_state COMMAND installation_state_tests)
+endif()

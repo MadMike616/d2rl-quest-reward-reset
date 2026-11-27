@@ -1,4 +1,5 @@
 #include "installer.h"
+#include "installation_state.hpp"
 #include "install_resource_ids.h"
 
 #include <D2RLPlugin/context.h>
@@ -709,18 +710,25 @@ auto Timestamp() -> std::wstring {
 	return buffer;
 }
 
+auto NativePath(const fs::path& path) -> fs::path {
+    const auto native = fs::absolute(path).lexically_normal().make_preferred().native();
+    if (native.starts_with(L"\\\\?\\")) return fs::path(native);
+    if (native.starts_with(L"\\\\")) return fs::path(L"\\\\?\\UNC\\" + native.substr(2));
+    return fs::path(L"\\\\?\\" + native);
+}
+
 void WriteAtomic(const fs::path& target, const Bytes& data, bool replace) {
 	fs::create_directories(target.parent_path());
 	auto temporary = target;
 	temporary += L".qrr-install-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
 	try {
-		std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+		std::ofstream stream(NativePath(temporary), std::ios::binary | std::ios::trunc);
 		if (!data.empty()) {
 			stream.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 		}
 		stream.close();
 		const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
-		if (!stream || !MoveFileExW(temporary.c_str(), target.c_str(), flags)) {
+		if (!stream || !MoveFileExW(NativePath(temporary).c_str(), NativePath(target).c_str(), flags)) {
 			throw std::runtime_error("could not write " + DisplayPath(target));
 		}
 	} catch (...) {
@@ -743,10 +751,33 @@ void QueueEdit(std::vector<Edit>& edits, fs::path relative, std::optional<Bytes>
 }
 
 void ApplyEdits(const fs::path& modRoot, const fs::path& loaderRoot, const fs::path& backupRoot,
-	const std::vector<Edit>& edits, const fs::path& markerRelative, const Bytes& marker) {
-	if (!edits.empty()) {
+	const std::vector<Edit>& edits, const fs::path& markerRelative, const Bytes& marker,
+	const std::optional<Bytes>& markerBefore, std::string_view pluginVersion) {
+	std::optional<fs::path> mirrorRoot;
+	fs::path mirrorRelative;
+	std::optional<Bytes> mirrorBefore;
+	Bytes mirrorAfter;
+	const auto mod = loaderRoot.parent_path();
+	if (mod.parent_path().filename() == L"mods") {
+		const auto root = mod.parent_path().parent_path() / L"d2rloader/I Hate TOMLs";
+		if (fs::is_directory(root)) {
+			mirrorRoot = root;
+			mirrorRelative = mod.filename() / markerRelative.filename();
+			mirrorBefore = ReadTarget(root, mirrorRelative);
+			mirrorAfter = StringToBytes(CompletedInstallationState(
+				mirrorBefore ? BytesToString(*mirrorBefore)
+					: (markerBefore ? BytesToString(*markerBefore) : std::string{}), pluginVersion));
+		}
+	}
+	if (!edits.empty() || markerBefore || mirrorBefore) {
 		if (!fs::create_directories(backupRoot)) {
 			throw std::runtime_error("install backup directory already exists: " + DisplayPath(backupRoot));
+		}
+		if (markerBefore) {
+			WriteAtomic(CheckedPath(backupRoot, markerRelative), *markerBefore, false);
+		}
+		if (mirrorBefore) {
+			WriteAtomic(CheckedPath(backupRoot, fs::path(L"config-mirror") / markerRelative.filename()), *mirrorBefore, false);
 		}
 		std::string created;
 		for (const auto& edit : edits) {
@@ -765,6 +796,7 @@ void ApplyEdits(const fs::path& modRoot, const fs::path& loaderRoot, const fs::p
 		}
 	}
 
+	bool mirrorWritten = false;
 	std::vector<const Edit*> written;
 	written.reserve(edits.size());
 	try {
@@ -776,10 +808,28 @@ void ApplyEdits(const fs::path& modRoot, const fs::path& loaderRoot, const fs::p
 			WriteAtomic(target, edit.after, edit.before.has_value());
 			written.push_back(&edit);
 		}
+		// Mirror completion first; the active token remains the final commit.
+		if (mirrorRoot) {
+			if (ReadTarget(*mirrorRoot, mirrorRelative) != mirrorBefore) {
+				throw std::runtime_error("installation TOML mirror changed during setup; retry next launch");
+			}
+			WriteAtomic(CheckedPath(*mirrorRoot, mirrorRelative), mirrorAfter, mirrorBefore.has_value());
+			mirrorWritten = true;
+		}
 		// Commit the marker last so a failed or interrupted install can be retried.
-		WriteAtomic(CheckedPath(loaderRoot, markerRelative), marker, false);
+		if (ReadTarget(loaderRoot, markerRelative) != markerBefore) {
+			throw std::runtime_error("installation state changed during setup; retry next launch");
+		}
+		WriteAtomic(CheckedPath(loaderRoot, markerRelative), marker, markerBefore.has_value());
 	} catch (...) {
 		bool restored = true;
+		if (mirrorWritten) {
+			try {
+				const auto target = CheckedPath(*mirrorRoot, mirrorRelative);
+				if (mirrorBefore) WriteAtomic(target, *mirrorBefore, true);
+				else if (!fs::remove(target)) restored = false;
+			} catch (...) { restored = false; }
+		}
 		for (auto i = written.rbegin(); i != written.rend(); ++i) {
 			try {
 				const auto& edit = **i;
@@ -828,15 +878,11 @@ auto Install(const D2RL::PluginContext& context, std::string_view pluginVersion)
 
 	FirstRunInstallLock installLock;
 	const fs::path markerRelative(L"config/quest-reward-reset.toml");
-	const auto markerPath = CheckedPath(loaderRoot, markerRelative);
-	std::error_code error;
-	const auto markerStatus = fs::symlink_status(markerPath, error);
-	if (fs::is_regular_file(markerStatus)) {
+	const auto markerBefore = ReadTarget(loaderRoot, markerRelative);
+	if (markerBefore && InstallationComplete(BytesToString(*markerBefore))) {
 		return InstallResult::AlreadyInstalled;
 	}
-	if (markerStatus.type() != fs::file_type::not_found) {
-		throw std::runtime_error("expected a regular file at " + DisplayPath(markerPath));
-	}
+	std::error_code error;
 
 	if (fs::is_regular_file(modRoot)) {
 		throw std::runtime_error("first-run setup requires an unpacked mod directory: " + DisplayPath(modRoot));
@@ -888,9 +934,9 @@ auto Install(const D2RL::PluginContext& context, std::string_view pluginVersion)
 
 	const auto backupRoot = CheckedPath(loaderRoot,
 		fs::path(SharedSetupDirectory) / L"backups/quest-reward-reset" / Timestamp());
-	const auto marker = std::string("[installation]\ncomplete = true\nplugin_version = \"")
-		+ std::string(pluginVersion) + "\"\n";
-	ApplyEdits(modRoot, loaderRoot, backupRoot, edits, markerRelative, StringToBytes(marker));
+	const auto marker = CompletedInstallationState(
+		markerBefore ? BytesToString(*markerBefore) : std::string{}, pluginVersion);
+	ApplyEdits(modRoot, loaderRoot, backupRoot, edits, markerRelative, StringToBytes(marker), markerBefore, pluginVersion);
 	if (edits.empty()) {
 		context.LogInfo("Quest Reward Reset: token data already present; recorded first-run installation.");
 		return InstallResult::AlreadyInstalled;
